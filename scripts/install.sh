@@ -13,6 +13,21 @@ actual=$(gpg --batch --show-keys --with-colons "$temporary/key.asc" | awk -F: '$
 [[ "$actual" == "$fingerprint" ]] || { echo 'Signing key fingerprint mismatch' >&2; exit 1; }
 pacman-key --add "$temporary/key.asc"
 pacman-key --lsign-key "$fingerprint"
+# Validate the live signed database without refreshing system repositories or
+# installing anything. The next Omarchy Update performs the normal full refresh.
+mkdir -p "$temporary/db" "$temporary/cache"
+cat > "$temporary/validation.conf" <<'VALIDATION'
+[options]
+Architecture = auto
+SigLevel = Required
+[seth-reee]
+SigLevel = Required
+Server = https://seth-reee.github.io/omarchy-packages/$arch
+VALIDATION
+pacman --config "$temporary/validation.conf" --dbpath "$temporary/db" \
+  --cachedir "$temporary/cache" --logfile "$temporary/pacman.log" \
+  --gpgdir /etc/pacman.d/gnupg -Sy
+pacman --config "$temporary/validation.conf" --dbpath "$temporary/db" -Sl seth-reee
 config=/etc/pacman.d/seth-reee.conf
 if [[ -f "$config" ]]; then cp -a "$config" "$config.backup-$(date +%Y%m%d%H%M%S)"; fi
 cat > "$config" <<'CONFIG'

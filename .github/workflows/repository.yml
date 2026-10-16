@@ -33,7 +33,7 @@ jobs:
         id: collect
         env:
           GH_TOKEN: ${{ github.token }}
-          FORCE_REFRESH: ${{ inputs.force || false }}
+          FORCE_REFRESH: ${{ github.event_name == 'push' || inputs.force || false }}
         run: python3 scripts/collect.py
       - name: Sign packages and repository databases
         if: steps.collect.outputs.changed == 'true'
