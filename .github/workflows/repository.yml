@@ -1,0 +1,87 @@
+name: Signed package repository
+
+on:
+  push:
+    branches: [master]
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Rebuild even when package versions are unchanged
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-repository
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      changed: ${{ steps.collect.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install package metadata reader
+        run: sudo apt-get update && sudo apt-get install -y libarchive-tools
+      - name: Collect and verify latest releases
+        id: collect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE_REFRESH: ${{ inputs.force || false }}
+        run: python3 scripts/collect.py
+      - name: Sign packages and repository databases
+        if: steps.collect.outputs.changed == 'true'
+        env:
+          REPOSITORY_SIGNING_KEY: ${{ secrets.REPOSITORY_SIGNING_KEY }}
+        run: |
+          docker run --rm -e REPOSITORY_SIGNING_KEY \
+            --mount "type=bind,src=$PWD,dst=/repo,readonly" \
+            --mount "type=bind,src=$PWD/dist,dst=/site" \
+            archlinux:base-devel bash -euc \
+            'pacman -Syu --noconfirm --needed python; bash /repo/scripts/sign.sh'
+          sudo chown -R "$(id -u):$(id -g)" dist
+      - uses: actions/configure-pages@v6.0.0
+        if: steps.collect.outputs.changed == 'true'
+      - uses: actions/upload-pages-artifact@v5.0.0
+        if: steps.collect.outputs.changed == 'true'
+        with:
+          path: dist
+
+  deploy:
+    if: needs.build.outputs.changed == 'true'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/deploy-pages@v5.0.1
+        id: deployment
+
+  heartbeat:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Keep scheduled refreshes active during quiet months
+        run: |
+          month=$(date -u +%Y-%m)
+          if [[ ! -f .github/heartbeat || "$(cat .github/heartbeat)" != "$month" ]]; then
+            printf '%s\n' "$month" > .github/heartbeat
+            git add .github/heartbeat
+            git -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit -m "Keep repository refresh schedule active ($month)"
+            git push
+          fi
